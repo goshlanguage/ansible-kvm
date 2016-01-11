@@ -1,0 +1,107 @@
+---
+- hosts: kvm
+  vars:
+    app_path: /var/www/webvirtmgr  
+
+  tasks:
+
+  - name: yum update
+    yum: name=* state=latest update_cache=yes
+
+  - name: Install kvm, python libs, libs, supervisor, nginx
+    yum: pkg={{item}} state=installed
+    with_items:
+      - epel-release
+      - qemu-kvm
+      - git
+      - libvirt
+      - virt-manager
+      - bridge-utils
+      - python-pip 
+      - libvirt-python
+      - libxml2-python
+      - python-websockify
+      - supervisor
+      - nginx
+      - net-tools
+   
+  - name: enable and start libvirt
+    service: name=libvirtd state=restarted enabled=yes
+
+  - name: setup port forwarding
+    sysctl: name="net.ipv4.ip_forward" value=1 sysctl_set=yes
+            
+  - name: check for web folder
+    file: name=/var/www state=directory
+ 
+  - name: clone webvirtmgr
+    git: repo=git://github.com/retspen/webvirtmgr.git
+         dest={{ app_path }}
+         accept_hostkey=yes
+
+  - name: set perms 
+    file: path="{{ app_path }}" owner=nginx group=nginx recurse=yes
+ 
+  - name: pip install webvirtmgr libs
+    pip: requirements={{ app_path }}/requirements.txt
+    notify: add_admin
+
+  # This is a django project
+  # http://docs.ansible.com/ansible/django_manage_module.html
+  - name: syncdb
+    django_manage: >
+        command=syncdb
+        app_path={{ app_path }}
+        
+  - name: collectstatic
+    django_manage: command=collectstatic app_path={{ app_path }}
+
+  - name: webvirtmgr nginx conf
+    copy: src=files/webvirtmgr.conf dest=/etc/nginx/conf.d/ owner=nginx group=nginx
+
+  - name: nginx conf
+    copy: src=files/nginx.conf dest=/etc/nginx/ owner=nginx group=nginx
+
+  - name: nginx restart and enable
+    service: name=nginx state=restarted enabled=yes
+ 
+  # FirewallD 
+  # http://docs.ansible.com/ansible/firewalld_module.html
+  - name: open 80
+    firewalld: port=80/tcp permanent=true state=enabled immediate=yes
+
+  - name: supervisor conf
+    template: src=templates/supervisord.conf.j2 dest=/etc/supervisord.conf
+
+  - name: supervisord restart and enable
+    service: name=supervisord state=restarted enabled=yes
+
+  # Now setting up the server as seen here:
+  #   https://github.com/retspen/webvirtmgr/wiki/Setup-Host-Server
+
+  - name: libvirt-bootstrap
+    sudo: true
+    shell: wget -O - http://retspen.github.io/libvirt-bootstrap.sh | sudo sh
+
+  - name: better bootsstrap
+    shell: /bin/bash {{ app_path }}/conf/libvirt-bootstrap.sh
+
+  - name: open 16509
+    firewalld: port=16509/tcp permanent=true state=enabled zone=public immediate=yes 
+  
+
+  # Uncomment desired ISOs
+  #
+  # - name: CoreOS
+  #   get_url: url=http://stable.release.core-os.net/amd64-usr/current/coreos_production_iso_image.iso dest={{ app_path }}/images/ owner=nginx group=nginx
+
+
+  - name: CoreOS
+    get_url: url=http://stable.release.core-os.net/amd64-usr/current/coreos_production_iso_image.iso dest={{ app_path }}/images/ owner=nginx group=nginx
+
+   
+  handlers:
+    - name: add_admin
+      django_manage: app_path="{{ app_path }}" command="createsuperuser --noinput --username=admin --email=my@email.com password=testtest"
+
+
